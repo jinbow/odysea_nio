@@ -1,7 +1,6 @@
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 import numpy as np
-from popy import mysignal,utils
 
 
 class synthetic_wacm:
@@ -9,18 +8,22 @@ class synthetic_wacm:
     def __init__(self,din,
                  lat0,cutoff_truth=1/3,
                  cutoff_wacm=1/30,
-                 orbit='700_1800'):
+                 remove_super_high=False,
+                 orbit='700_1800',):
         
         u_truth,v_truth,uw_truth,vw_truth=din
         
         self.lat0=lat0
         self.wacm_sampling_period=load_wacm_period(lat0,orbit)
-        self.f0=utils.lat2f(lat0)
+        self.f0=lat2f(lat0)
         self.inertial_period=2*np.pi/self.f0 / 3600 
         self.u_truth_total=u_truth*1
         self.v_truth_total=v_truth*1
         self.uw_truth=uw_truth*1
         self.vw_truth=vw_truth*1
+        
+        
+        
         print("seperate hourly truth into low and high frequencies")
         uobs_low0,uobs= filter_seperation(u_truth,cutoff=cutoff_truth)
         vobs_low0,vobs= filter_seperation(v_truth,cutoff=cutoff_truth)
@@ -28,20 +31,31 @@ class synthetic_wacm:
         self.v_truth_low=vobs_low0*1
         self.u_truth_high=uobs*1
         self.v_truth_high=vobs*1
+        if remove_super_high:
+            uobs_low0,uobs= filter_seperation(u_truth,cutoff=24/self.inertial_period * 2)
+            vobs_low0,vobs= filter_seperation(v_truth,cutoff=24/self.inertial_period * 2)
+            #self.u_truth_low=uobs_low0*1
+            #self.v_truth_low=vobs_low0*1
+            self.u_truth_high=self.u_truth_high-uobs
+            self.v_truth_high=self.v_truth_high-vobs
+            self.u_truth_super_high=uobs*1
+            self.v_truth_super_high=vobs*1
+            
         print("Remove tides from high-frequency truth")
-        u,v, ut, vt=remove_tides([uobs,vobs],lat0)
+        u,v, ut, vt=remove_tides([self.u_truth_high,self.v_truth_high],lat0)
         self.u_truth_high_notide=u*1
         self.v_truth_high_notide=v*1
         self.u_truth_high_tide=ut*1
         self.v_truth_high_tide=vt*1
         print("bandpass to get true NIO")
-        self.u_truth_high_notide_nio=NIO_bandpass(u,lat0)
-        self.v_truth_high_notide_nio=NIO_bandpass(v,lat0)
+        self.u_truth_high_notide_nio=NIO_bandpass(self.u_truth_high,lat0)
+        self.v_truth_high_notide_nio=NIO_bandpass(self.v_truth_high,lat0)
         
         print("generate synthetic wacm")
-        wacm_u,wacm_v,wacm_uw,wacm_vw=interp_wacm([u_truth,v_truth, uw_truth,vw_truth],lat0,
-                                                t_range=[u_truth.time[0].values,u_truth.time[-1].values],
-                                                  orbit=orbit)
+        wacm_u,wacm_v,wacm_uw,wacm_vw=interp_wacm([u_truth,v_truth, uw_truth,vw_truth],
+                                                  lat0,
+                                                   t_range=[u_truth.time[0].values,u_truth.time[-1].values],
+                                                   orbit=orbit)
         self.u_wacm_total=wacm_u*1
         self.v_wacm_total=wacm_v*1
         self.uw_wacm=wacm_uw*1
@@ -61,45 +75,73 @@ class synthetic_wacm:
         
         return
     
-    def get_wacm_nio(self,t_out,has_tides=False,use_hourly_wind=False):
+    def get_wacm_nio(self,t_out,
+                     t_out_short=[],
+                     uv_noise=0,
+                     wind_noise=0,
+                     has_tides=False,
+                     use_hourly_wind=False,
+                    fitting_method='Slab',
+                    periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
+                    include_nio=True):
         #Include extra points in winds to avoid extrapolation problem
         """
         t_out: numpy.datetime64
+        include_nio: bool, only used for Harmonics method. 
+        
         """
-        
-        print(np.ceil(self.wacm_sampling_period))
-        
+                
         t0=t_out.min()-np.timedelta64(int(np.ceil(self.wacm_sampling_period) ),'h')
         t1=t_out.max()+np.timedelta64(int(np.ceil(self.wacm_sampling_period) ),'h')
         
         u=self.u_wacm_high_notide.sel(time=slice(t0,t1))
         
         t0,t1=u.time.values[0],u.time.values[-1]
-        
-        if 'time' in str(type(t0)):
-            t00,t11=t0-np.timedelta64(2,'D'),t1+np.timedelta64(2,'D')
-        else:
-            t00,t11=np.datetime64(t0)-np.timedelta64(2,'D'),np.datetime64(t1)+np.timedelta64(2,'D')
-            
-        if use_hourly_wind:
-            uw=self.uw_truth.sel(time=slice(t00,t11)) #longer-period ofr wind to avoid extrapolation
-            vw=self.vw_truth.sel(time=slice(t00,t11))
-        else:
-            uw=self.uw_wacm.sel(time=slice(t00,t11))
-            vw=self.vw_wacm.sel(time=slice(t00,t11))
-                    
         u=self.u_wacm_high_notide.sel(time=slice(t0,t1))
         v=self.v_wacm_high_notide.sel(time=slice(t0,t1))
-    
-        up,vp,utid,vtid,param=reconstruct_NIO_short_segment(u,v,uw,vw,self.lat0,has_tides=has_tides)
-        
-        self.u_wacm_nio=up.interp(time=t_out)
-        self.v_wacm_nio=vp.interp(time=t_out)
-        
-        self.wacm_nio_param=param
-        up,vp=up.interp(time=t_out),vp.interp(time=t_out)
-        
-        return up,vp,utid,vtid,param
+        u+=np.random.normal(0,uv_noise,u.size)
+        v+=np.random.normal(0,uv_noise,u.size)
+
+        if fitting_method=='Harmonics':
+            up,vp,param=optimize_harmonics(u,v,lat2f(self.lat0),t_out=t_out,periods=periods,include_nio=include_nio)
+            return up,vp,None,None,param
+        else:
+            if 'time' in str(type(t0)):
+                t00,t11=t0-np.timedelta64(2,'D'),t1+np.timedelta64(2,'D')
+            else:
+                t00,t11=np.datetime64(t0)-np.timedelta64(2,'D'),np.datetime64(t1)+np.timedelta64(2,'D')
+
+            if use_hourly_wind:
+                uw=self.uw_truth.sel(time=slice(t00,t11)) #longer-period for wind to avoid extrapolation
+                vw=self.vw_truth.sel(time=slice(t00,t11))
+            else:
+                uw=self.uw_wacm.sel(time=slice(t00,t11))
+                vw=self.vw_wacm.sel(time=slice(t00,t11))
+
+            uw+=np.random.normal(0,wind_noise,uw.size)
+            vw+=np.random.normal(0,wind_noise,uw.size)
+
+            
+            utid,vtid,param=optimize_harmonics(u,v,self.f0,
+                      periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
+                      include_nio=False)
+            if has_tides:
+                u=u-utid.interp(time=u.time.values)
+                v=v-vtid.interp(time=u.time.values)
+            up,vp,_,_,param=reconstruct_NIO_short_segment(u,v,
+                                                          uw,vw,self.lat0,
+                                                          t_out=t_out,
+                                                          uv_noise=uv_noise,
+                                                          wind_noise=wind_noise,
+                                                          has_tides=has_tides)
+       
+            if len(t_out_short)>0:
+                up=up.interp(time=t_out_short)
+                vp=vp.interp(time=t_out_short)
+                utid=utid.interp(time=t_out_short)
+                vtid=vtid.interp(time=t_out_short)
+                
+            return up,vp,utid,vtid,param
     
     
 def remove_tides(d,lat0):
@@ -121,11 +163,15 @@ def remove_tides(d,lat0):
     v=d[1]
     
     tt=(u.time.values-u.time.values[0])/np.timedelta64(1,'s')/86400 #convert to days
-    
-    cc=utide.solve(tt,u.values,v.values,
-                   constit=('O1', 'K1', 'M2', 'S2', 'M4', 'M6'), 
-                   lat=lat0,verbose=False)
-    
+    constit=('O1', 'K1', 'M2', 'S2', 'M4', 'M6')
+    if len(constit)>0:
+        cc=utide.solve(tt,u.values,v.values,
+                       constit=constit, 
+                       lat=lat0,verbose=False)
+    else:
+        cc=utide.solve(tt,u.values,v.values, 
+                       lat=lat0,verbose=False)
+
     tide=utide.reconstruct(tt,cc,verbose=False)
     u.values=u.values-tide.u
     v.values=v.values-tide.v
@@ -148,7 +194,7 @@ def NIO_bandpass(uobs,f0):
     import xarray as xr
     
     if abs(f0)>0.1: #latitude
-        f0=np.abs(utils.lat2f(f0))
+        f0=np.abs(lat2f(f0))
     
     tt=uobs.time.values
     dtt=np.diff(tt)
@@ -160,7 +206,7 @@ def NIO_bandpass(uobs,f0):
         period=dtt[100]/np.timedelta64(1,'s')
         newd=uobs
         
-    d_filtered=mysignal.filter_butter(newd.values,[0.96*f0,1.04*f0],2*np.pi/period,'bandpass')
+    d_filtered=filter_butter(newd.values,[0.96*f0,1.04*f0],2*np.pi/period,'bandpass')
     
     if (dtt.min()-dtt.max())!=0: #need interpolation on to uniform grid
         dd=xr.DataArray(d_filtered,dims=('time'),coords={'time':tt_new} )
@@ -268,7 +314,7 @@ def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_win
     u_sub=uobs.sel(time=slice(t_uv.min(),t_uv.max()))
     t_output=v_sub.time.values
 
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     #print('The inertial period = %5.2f hours'%(2*np.pi/f0/86400*24))
 
     u_pred,v_pred=optimize_slab_noshear_withtide(t_uv,u.data+noise_u,v.data+noise_v,
@@ -289,7 +335,9 @@ def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_win
     return error, std_truth
 
 def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
-                                t_out=None,
+                                  t_out=[],
+                                  uv_noise=0,
+                                  wind_noise=0,
                                 has_tides=False,
                                 is_windstress=False):
     """
@@ -320,12 +368,11 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
     
     """
     import pandas as pd
-    
     import xarray as xr
     
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
-    if t_out is None:
+    if len(t_out)==0:
         t_out=pd.date_range(wacm_u.time.values[0],wacm_u.time.values[-1],freq='1h')
     if has_tides:
         wacm_u, wacm_v, ut, vt=remove_tides([wacm_u, wacm_v],lat0)
@@ -336,12 +383,36 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
         
     u_pred,v_pred,param=optimize_slab_noshear_withtide(wacm_u.time.values,wacm_u.data,wacm_v.data,
                                          wacm_uw.time.values,wacm_uw.data,wacm_vw.data,
-                                         f0,t_out=t_out,has_tides=False)
+                                         f0,has_tides=False)
     
-    u_pred=xr.DataArray(u_pred,dims=('time'),coords={'time':t_out}) 
-    v_pred=xr.DataArray(v_pred,dims=('time'),coords={'time':t_out})
+    u_pred=u_pred.interp(time=t_out) 
+    v_pred=v_pred.interp(time=t_out)
     
     return u_pred, v_pred, ut, vt, param
+
+def get_tide(tt,T,param):
+    """
+    tt: numpy Array, time in days
+    T: list of periods of the tidal constituents to be considered
+    param: list with size of N x 4, where N is the lenght of T.
+           For each constituent, the param corresponds to [U_amp, U_phase, V_amp, V_phase]
+    
+    """
+    n=len(T)
+    pam=np.array(param).reshape(n,4)
+    
+    #if 'time' in str(type(tt[0])):
+    #    tt=(tt-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D')
+        
+    u=0
+    v=0
+    
+    for i, period in enumerate(T):
+        omg=2*np.pi/period
+        u+=pam[i,0]*np.cos(omg*tt+pam[i,1])
+        v+=pam[i,2]*np.cos(omg*tt+pam[i,3])
+        
+    return u, v    
 
 def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
                     fitting_window=None,
@@ -380,7 +451,7 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
     import pandas as pd
     import xarray as xr
     
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     if input_wacm_data:
         wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
     else:
@@ -505,7 +576,7 @@ def filter_seperation(uv,cutoff=1/10):
         dtt=dtt[0]/np.timedelta64(1,'s')/3600 # hours
         
     #low-pass filter at curoff period of 10 days
-    uv_low.data=mysignal.filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
+    uv_low.data=filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
     
     uv_low=uv_low.interp(time=uv.time)
     uv_high=uv-uv_low
@@ -706,36 +777,15 @@ def loss_slab_noshear(x,y,tt,taux,tauy,f,weight,T=[],has_tides=False):
     
     
 
-    loss=(np.r_[u, v].flatten() - y) #* weight
+    loss=(np.r_[u, v].flatten() - y) * weight
     
     return loss
 
-def get_tide(tt,T,param):
-    """
-    tt: numpy Array, time in days
-    T: list of periods of the tidal constituents to be considered
-    param: list with size of N x 4, where N is the lenght of T.
-           For each constituent, the param corresponds to [U_amp, U_phase, V_amp, V_phase]
-    
-    """
-    n=len(T)
-    pam=np.array(param).reshape(n,4)
-    
-    #if 'time' in str(type(tt[0])):
-    #    tt=(tt-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D')
-        
-    u=0
-    v=0
-    
-    for i, period in enumerate(T):
-        omg=2*np.pi/period
-        u+=pam[i,0]*np.cos(omg*tt+pam[i,1])
-        v+=pam[i,2]*np.cos(omg*tt+pam[i,3])
-        
-    return u, v    
 
-def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,t_out,
+
+def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
                                    has_tides=False,
+                                   t_out=[],
                                    T_tide=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
                                    is_windstress=False):
     
@@ -755,8 +805,9 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,t_out,
     T_tide: periods of the tidal constituents (unit: day)
             default values correspond to [O1, K1, M2, S2, M4, M6]
     """
-    
+    import pandas as pd
     from scipy.optimize import least_squares
+    import xarray as xr
 
     #######################################
     ## The following has tides
@@ -782,7 +833,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,t_out,
     win=np.hanning(u.size)
     weight=np.r_[win,win].flatten()
     #x=np.linspace(-np.pi/2+np.pi/40,np.pi/2-np.pi/40,u.size)
-    #weight=np.cos(x)
+    #weight=np.r_[np.cos(x),np.cos(x)].flatten()
     
     if not is_windstress:
         #convert wind speed to windstress
@@ -796,15 +847,13 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,t_out,
     
     t_tau_days=(t_tau-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
     t_uv_days=(t_uv-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
-    
-    t_out_days=(t_out-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
+    t_out0=pd.date_range(t_uv.min(),t_uv.max(),freq='1h')
+    t_out_days=(t_out0-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
     
     
     #interpolate onto arbitrary time axis
     taux_func=interp1d(t_tau_days,taux,fill_value="extrapolate")
     tauy_func=interp1d(t_tau_days,tauy,fill_value="extrapolate")
-    
-    
     
     res_lsq = least_squares(loss_slab_noshear, x0, loss='cauchy',
                         args=(uv_truth, t_uv_days, taux_func, tauy_func, f0, weight, T_tide,has_tides))
@@ -825,8 +874,192 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,t_out,
         u_pred-=u_tide
         v_pred-=v_tide
 
+    u_pred=xr.DataArray(u_pred,dims=('time'),coords={'time':t_out0})
+    v_pred=xr.DataArray(v_pred,dims=('time'),coords={'time':t_out0})
     
+    if len(t_out)>0:
+        u_pred.interp(time=t_out)
+        v_pred.interp(time=t_out)
     #print('cost=',(((u.data-u_pred)**2/2+(v.data-v_pred)**2)/2).mean()**0.5)
 
     return u_pred,v_pred, {'H':res_lsq.x[2],'c':res_lsq.x[3],'cost':res_lsq.cost,'success':res_lsq.success}
     
+
+def harmonics(x,tt,periods):
+    """
+    tt: numpy Array, time in days
+    periods: list of periods (in days) of the tidal constituents to be considered
+    x: A list with size of N x 4, where N is the lenght of T.
+           For each constituent, the param corresponds to [amp, phase], the last two correspond to a linear trend. 
+    
+    """
+    import numpy
+    from scipy.interpolate import CubicSpline
+
+    n=len(periods)
+    xx=np.array(x).reshape(-1,4)[:n+1,:]
+    
+    u=xx[-1,0]+xx[-1,1]*tt 
+    v=xx[-1,2]+xx[-1,3]*tt
+    
+    for i, period in enumerate(periods):
+        omg=2*numpy.pi/period
+        u=u+xx[i,0]*numpy.cos(omg*tt+xx[i,1])
+        v=v+xx[i,2]*numpy.cos(omg*tt+xx[i,3])
+
+    #t0=tt-tt[0]
+    #t0=t0/t0.max()
+    
+    #modulation=CubicSpline(np.linspace(0,1,8),x[-8:])(t0)
+    #modulation=1
+    
+    #u=u*modulation
+    #v=v*modulation
+    
+    return np.c_[u,v]
+
+def loss_harmonics(x,y,tt,periods,weight): 
+    """
+    the loss function
+    
+    x: The parameter space [u_amplitude, u_phase, v_amplitude, v_phase] * (N+1) where N is the number of harmonics considered.
+        
+    y: complex, observations, 
+    
+    tt: time axis in days (referenced to 1979-01-01 00:00:00) or array of datetime64
+        
+    f: coriolis param
+    
+    """
+    
+    uv=harmonics(x,tt,periods)
+    
+    loss=(uv - y) #* weight
+    
+    return loss.flatten()
+
+def optimize_harmonics(u,v,f0,t_out=[],
+                      periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
+                      include_nio=True):
+    
+    """
+    t_uv: time axis for input u and v, np.datetime64 or pandas.date_range
+    
+    u,v: Array (N), zonal and meridonal velocities on t_uv axis
+    
+    t_tau: time axis for taux, tauy, can be different from t_uv
+    
+    taux,tauy: Array, windstress on t_tau on t_tau axis,
+    
+    f0: coriolis parameter
+    
+    t_out: the time axis of the output, array of np.datetime64/pd.date_range
+    
+    T_tide: periods of the tidal constituents (unit: day)
+            default values correspond to [O1, K1, M2, S2, M4, M6]
+    """
+    import pandas as pd
+    from scipy.optimize import least_squares
+    import xarray as xr
+
+    #######################################
+    ## The following has tides
+    #######################################
+    #without shear, with bias, with tides The last four numbers are for the tidal amplitude and phase (u,v)
+    if include_nio:
+        periods=np.r_[periods,2*np.pi/f0/86400]
+        
+    omg=2*np.pi/(np.array(periods)*86400)
+    
+    x0=np.zeros( ( len(periods)*4 + 4 + 8,) ).flatten() #the first additional 4 points are for linear trend, the last 8 points are for the envelop
+    x0[-8]=1.0
+    uv=np.c_[u.values,v.values]
+    
+    weight=np.hanning(u.size)
+    weight=np.c_[weight,weight]/weight.max()
+    
+    #x=np.linspace(-np.pi/2+np.pi/40,np.pi/2-np.pi/40,u.size)
+    #weight=np.r_[np.cos(x),np.cos(x)]
+    
+    t_uv=u.time.values
+    t_uv_days=(t_uv-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
+  
+    res_lsq = least_squares(loss_harmonics, x0, loss='cauchy',
+                        args=(uv,t_uv_days,periods,weight)) 
+    #print(res_lsq)
+    if len(t_out)==0:
+        t_out=pd.date_range(t_uv[0],t_uv[-1]+np.timedelta64(1,'D'),freq='1h')
+    t_out_days=(t_out-np.datetime64('1979-01-01 00:00:00'))/np.timedelta64(1,'D') 
+        
+    uv = harmonics(res_lsq.x,t_out_days,periods)
+    
+    u_pred=xr.DataArray(uv[:,0],dims=('time'),coords={'time':t_out})
+    v_pred=xr.DataArray(uv[:,1],dims=('time'),coords={'time':t_out})
+    
+    return u_pred,v_pred, res_lsq.x
+    
+
+def create_wacm_from_mooring(ss,cutoff_truth=1/4,
+                             cutoff_wacm=1/4,
+                             orbit='700_1800',
+                             remove_super_high=False,
+                             velocity_type='obs'):
+    """
+    ss is the station name chosen from ss=['PaPa2','KEO2','NTAS2','Stratus2','WHOTS2']
+    velocity_type: string, one from ['obs','mod5','modx','modt']
+    """
+    import xarray as xr
+    dd=xr.open_dataset('data/from_Hong/%s.h5'%ss)
+    din=[]
+    vt=velocity_type
+    for key in ['UU_%s'%vt,'VV_%s'%vt,'Uwind_o','Vwind_o']:
+        din.append(dd[key])
+    
+    d700=synthetic_wacm(din,dd.lat0,
+                        cutoff_truth=cutoff_truth,
+                        cutoff_wacm=cutoff_wacm,
+                        remove_super_high=remove_super_high,
+                        orbit=orbit)
+    del dd
+    
+    return d700
+
+
+def filter_butter(data,cutoff,fs, btype,filter_order=4,axis=0):
+    """filter signal data using butter filter.
+
+    Parameters
+    ==================
+    data: N-D array
+    cutoff: scalar 
+        the critical frequency 
+    fs: scalar
+        the sampling frequency
+    btype: string
+        'low' for lowpass, 'high' for highpass
+    filter_order: scalar
+        The order for the filter
+    axis: scalar
+        The axis of data to which the filter is applied
+
+    Output
+    ===============
+    N-D array of the filtered data
+
+    """
+
+    import numpy as np
+    from scipy import signal
+
+    normal_cutoff=cutoff/(0.5*fs)  #normalize cutoff frequency
+    b,a=signal.butter(filter_order, normal_cutoff,btype)
+    y = signal.filtfilt(b, a, data, axis=axis)
+
+    return y
+    
+def lat2f(d):
+    """ Calculate Coriolis parameter from latitude
+    d: latitudes, 1- or 2-D
+    """
+    from numpy import pi, sin
+    return 2.0*0.729e-4*sin(d*pi/180.0)
