@@ -1,6 +1,7 @@
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 import numpy as np
+from popy import mysignal,utils
 
 
 class synthetic_wacm:
@@ -15,7 +16,7 @@ class synthetic_wacm:
         
         self.lat0=lat0
         self.wacm_sampling_period=load_wacm_period(lat0,orbit)
-        self.f0=lat2f(lat0)
+        self.f0=utils.lat2f(lat0)
         self.inertial_period=2*np.pi/self.f0 / 3600 
         self.u_truth_total=u_truth*1
         self.v_truth_total=v_truth*1
@@ -103,7 +104,7 @@ class synthetic_wacm:
         v+=np.random.normal(0,uv_noise,u.size)
 
         if fitting_method=='Harmonics':
-            up,vp,param=optimize_harmonics(u,v,lat2f(self.lat0),t_out=t_out,periods=periods,include_nio=include_nio)
+            up,vp,param=optimize_harmonics(u,v,utils.lat2f(self.lat0),t_out=t_out,periods=periods,include_nio=include_nio)
             return up,vp,None,None,param
         else:
             if 'time' in str(type(t0)):
@@ -194,7 +195,7 @@ def NIO_bandpass(uobs,f0):
     import xarray as xr
     
     if abs(f0)>0.1: #latitude
-        f0=np.abs(lat2f(f0))
+        f0=np.abs(utils.lat2f(f0))
     
     tt=uobs.time.values
     dtt=np.diff(tt)
@@ -206,7 +207,7 @@ def NIO_bandpass(uobs,f0):
         period=dtt[100]/np.timedelta64(1,'s')
         newd=uobs
         
-    d_filtered=filter_butter(newd.values,[0.96*f0,1.04*f0],2*np.pi/period,'bandpass')
+    d_filtered=mysignal.filter_butter(newd.values,[0.95*f0,1.05*f0],2*np.pi/period,'bandpass')
     
     if (dtt.min()-dtt.max())!=0: #need interpolation on to uniform grid
         dd=xr.DataArray(d_filtered,dims=('time'),coords={'time':tt_new} )
@@ -314,7 +315,7 @@ def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_win
     u_sub=uobs.sel(time=slice(t_uv.min(),t_uv.max()))
     t_output=v_sub.time.values
 
-    f0=lat2f(lat0)
+    f0=utils.lat2f(lat0)
     #print('The inertial period = %5.2f hours'%(2*np.pi/f0/86400*24))
 
     u_pred,v_pred=optimize_slab_noshear_withtide(t_uv,u.data+noise_u,v.data+noise_v,
@@ -370,7 +371,7 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
     import pandas as pd
     import xarray as xr
     
-    f0=lat2f(lat0)
+    f0=utils.lat2f(lat0)
     wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
     if len(t_out)==0:
         t_out=pd.date_range(wacm_u.time.values[0],wacm_u.time.values[-1],freq='1h')
@@ -451,7 +452,7 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
     import pandas as pd
     import xarray as xr
     
-    f0=lat2f(lat0)
+    f0=utils.lat2f(lat0)
     if input_wacm_data:
         wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
     else:
@@ -576,7 +577,7 @@ def filter_seperation(uv,cutoff=1/10):
         dtt=dtt[0]/np.timedelta64(1,'s')/3600 # hours
         
     #low-pass filter at curoff period of 10 days
-    uv_low.data=filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
+    uv_low.data=mysignal.filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
     
     uv_low=uv_low.interp(time=uv.time)
     uv_high=uv-uv_low
@@ -830,10 +831,10 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
         
     uv_truth=np.r_[u,v].flatten()
     
-    win=np.hanning(u.size)
-    weight=np.r_[win,win].flatten()
-    #x=np.linspace(-np.pi/2+np.pi/40,np.pi/2-np.pi/40,u.size)
-    #weight=np.r_[np.cos(x),np.cos(x)].flatten()
+    #win=np.hanning(u.size)
+    #weight=np.r_[win,win].flatten()
+    x=np.linspace(-np.pi/2+np.pi/40,np.pi/2-np.pi/40,u.size)
+    weight=np.r_[np.cos(x),np.cos(x)].flatten()
     
     if not is_windstress:
         #convert wind speed to windstress
@@ -1024,42 +1025,3 @@ def create_wacm_from_mooring(ss,cutoff_truth=1/4,
     
     return d700
 
-
-def filter_butter(data,cutoff,fs, btype,filter_order=4,axis=0):
-    """filter signal data using butter filter.
-
-    Parameters
-    ==================
-    data: N-D array
-    cutoff: scalar 
-        the critical frequency 
-    fs: scalar
-        the sampling frequency
-    btype: string
-        'low' for lowpass, 'high' for highpass
-    filter_order: scalar
-        The order for the filter
-    axis: scalar
-        The axis of data to which the filter is applied
-
-    Output
-    ===============
-    N-D array of the filtered data
-
-    """
-
-    import numpy as np
-    from scipy import signal
-
-    normal_cutoff=cutoff/(0.5*fs)  #normalize cutoff frequency
-    b,a=signal.butter(filter_order, normal_cutoff,btype)
-    y = signal.filtfilt(b, a, data, axis=axis)
-
-    return y
-    
-def lat2f(d):
-    """ Calculate Coriolis parameter from latitude
-    d: latitudes, 1- or 2-D
-    """
-    from numpy import pi, sin
-    return 2.0*0.729e-4*sin(d*pi/180.0)
