@@ -17,7 +17,7 @@ class wacmLatLon:
     
     def __init__(self,config_fname=None):
                  
-        pass
+        self.loadSampling(fn = '../src/wacm_simple_orbit_s2012-01-01 21:11:04.301710e2012-01-05 20:54:17.444398.nc')
         
     def loadSampling(self,fn):
         
@@ -28,9 +28,7 @@ class wacmLatLon:
         self.dt = self.max_time-self.min_time
     
     def getSamplingTimes(self,lats,lons,start_time,end_time):
-        
-        orbit_period = self.sampling.attrs['Keplerian Period [min]']
-           
+                   
         times = []
 
         ds = self.sampling.sel(lat=xr.DataArray(lats, dims='z'),
