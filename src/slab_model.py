@@ -3,7 +3,29 @@ from scipy.interpolate import interp1d
 import numpy as np
 from popy import mysignal,utils
 
+class mld:
+    
+    def __init__(self):
 
+        data = xr.open_dataset('/u/bura0/wineteer/WACM/jinbo_odysea/Argo_mixedlayers_monthlyclim_04142022.nc')
+        data = data.set_coords(("lat", "lon", "month"))
+        
+        self.dataset = xr.Dataset() 
+
+        self.dataset = self.dataset.assign_coords(coords={'lon': (['lon'], data['lon'].values),
+                                                'lat': (['lat'], data['lat'].values),
+                                                'month': (['month'], data['month'].values)})   
+        
+        self.dataset = self.dataset.assign({'mld_da_mean': (['lat', 'lon', 'month'], data['mld_da_mean'].values),
+                                           'mld_da_std': (['lat', 'lon', 'month'], data['mld_da_std'].values)})
+        
+    
+    def getmld(self,lat,lon,month):
+        
+        interp_ds = self.dataset.interp(lat=lat,lon=lon,month=month,method='linear',kwargs={"fill_value": "extrapolate"})
+        
+        return interp_ds.mld_da_mean.item(),interp_ds.mld_da_std.item()
+    
 class synthetic_wacm:
     import slab_model
     def __init__(self,din,
@@ -84,7 +106,9 @@ class synthetic_wacm:
                      use_hourly_wind=False,
                     fitting_method='Slab',
                     periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
-                    include_nio=True):
+                    include_nio=True,
+                    is_windstress=False,
+                    c_clim=60,c_min=0,c_max=2000):
         #Include extra points in winds to avoid extrapolation problem
         """
         t_out: numpy.datetime64
@@ -134,7 +158,8 @@ class synthetic_wacm:
                                                           t_out=t_out,
                                                           uv_noise=uv_noise,
                                                           wind_noise=wind_noise,
-                                                          has_tides=has_tides)
+                                                          has_tides=has_tides,
+                                                          c_clim=c_clim,c_min=c_min,c_max=c_max)
        
             if len(t_out_short)>0:
                 up=up.interp(time=t_out_short)
@@ -340,7 +365,8 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
                                   uv_noise=0,
                                   wind_noise=0,
                                 has_tides=False,
-                                is_windstress=False):
+                                is_windstress=False,
+                                 c_clim=60,c_min=0,c_max=2000):
     """
     Take high-frequency observations
     subsample according to WaCM scenario
@@ -384,7 +410,9 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
         
     u_pred,v_pred,param=optimize_slab_noshear_withtide(wacm_u.time.values,wacm_u.data,wacm_v.data,
                                          wacm_uw.time.values,wacm_uw.data,wacm_vw.data,
-                                         f0,has_tides=False)
+                                         f0,has_tides=False,
+                                         c_clim=c_clim,c_min=c_min,c_max=c_max)
+
     
     u_pred=u_pred.interp(time=t_out) 
     v_pred=v_pred.interp(time=t_out)
@@ -421,7 +449,8 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
                     wacm_error_wind=0,
                     has_tides=False,
                    is_windstress=False,
-                   orbit='700_1800'):
+                   orbit='700_1800',
+                   c_clim=60,c_min=0,c_max=2000):
     """
     Take high-frequency observations
     subsample according to WaCM scenario
@@ -496,14 +525,18 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
         if ii==0:
             u_pred,v_pred,_=optimize_slab_noshear_withtide(t_uv,u.data,v.data,
                                                  t_tau,uw.data,vw.data,
-                                                 f0,t_output,has_tides=has_tides)
+                                                 f0,t_output,has_tides=has_tides,is_windstress=is_windstress,
+                                                           c_clim=c_clim,c_min=c_min,c_max=c_max)
+
             u_pred=xr.DataArray(u_pred,dims=('time'),coords={'time':t_output})
             v_pred=xr.DataArray(v_pred,dims=('time'),coords={'time':t_output})
             
         else:
             u_pred0,v_pred0,_=optimize_slab_noshear_withtide(t_uv,u.data,v.data,
                                                  t_tau,uw.data,vw.data,
-                                                 f0,t_output,has_tides=has_tides,is_windstress=is_windstress)
+                                                 f0,t_output,has_tides=has_tides,is_windstress=is_windstress,
+                                                  c_clim=c_clim,c_min=c_min,c_max=c_max)
+
             u_pred0=xr.DataArray(u_pred0,dims=('time'),coords={'time':t_output})
             v_pred0=xr.DataArray(v_pred0,dims=('time'),coords={'time':t_output})
             
@@ -788,7 +821,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
                                    has_tides=False,
                                    t_out=[],
                                    T_tide=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
-                                   is_windstress=False):
+                                   is_windstress=False,c_clim=60,c_max=2000,c_min=0):
     
     """
     t_uv: time axis for input u and v, np.datetime64 or pandas.date_range
@@ -825,10 +858,24 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
         print("include tides with periods of ",T_tide)
     if has_tides:
         #T_tide=T_tide[1:4]
-        x0=[u[0],v[0],60,2e-6,0,0,]+[0,0,0,0]*len(T_tide)
-    else:
-        x0=[u[0],v[0],60,2e-6,0,0]
+        x0=[u[0],v[0],c_clim,2e-6,0,0,]+[0,0,0,0]*len(T_tide)
+        #print(x0)
+
+          
+        bounds = [[-3,-3,c_min,2e-7,-3,-3] + [-np.inf]*4*len(T_tide),
+                  [3,3,c_max,2e-5,3,3] + [np.inf]*4*len(T_tide)]
         
+    else:
+        x0=[u[0],v[0],c_clim,2e-6,0,0]
+        bounds = [[-3,-3,c_min,2e-7,-3,-3],
+                  [3,3,c_max,2e-5,3,3]]
+        
+    # bounds are:
+    # -3 to 3 m/s currents (pretty wide)
+    # 5 to 2000m mixed layer; fairly reasonable, not including 0 incase of numerical problems
+    # 2e-7 to 2e-5; 1 order of magnitude around orginal c value; no basis
+    # -3 to 3 m/s current bias (very wide)    
+    
     uv_truth=np.r_[u,v].flatten()
     
     #win=np.hanning(u.size)
@@ -856,7 +903,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
     taux_func=interp1d(t_tau_days,taux,fill_value="extrapolate")
     tauy_func=interp1d(t_tau_days,tauy,fill_value="extrapolate")
     
-    res_lsq = least_squares(loss_slab_noshear, x0, loss='cauchy',
+    res_lsq = least_squares(loss_slab_noshear, x0, bounds=bounds,loss='cauchy',
                         args=(uv_truth, t_uv_days, taux_func, tauy_func, f0, weight, T_tide,has_tides))
     
         
