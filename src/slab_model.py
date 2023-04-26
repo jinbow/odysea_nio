@@ -1,7 +1,9 @@
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 import numpy as np
-from popy import mysignal,utils
+from utils import filter_butter, lat2f
+import slab_model
+
 
 class mld:
     
@@ -26,34 +28,52 @@ class mld:
         
         return interp_ds.mld_da_mean.item(),interp_ds.mld_da_std.item()
     
+    
+    
 class synthetic_wacm:
-    import slab_model
     def __init__(self,din,
-                 lat0,cutoff_truth=1/3,
+                 lat0,lon0,cutoff_truth=1/3,
                  cutoff_wacm=1/30,
                  remove_super_high=False,
-                 orbit='700_1800',):
+                 orbit='700_1800'):
         
+        
+        """
+        din: list of [sea surface velocity u, v, and wind vector]
+        lat0: the latitude of the point
+        lon0: the longitude of a point
+        cutoff_truth: the frequency (/day) threshold for filtering the true time series
+        cutoff_wacm: the frequency threshold for filtering wacm time series
+        remove_super_high: bool, whether discard super-high frequency
+        orbit: the orbit identifier, it was written for earlier development when orbit is not fixed. It is now default '700_1800'.
+        """
         u_truth,v_truth,uw_truth,vw_truth=din
         
         self.lat0=lat0
         self.wacm_sampling_period=load_wacm_period(lat0,orbit)
-        self.f0=utils.lat2f(lat0)
+        self.f0=lat2f(lat0)
         self.inertial_period=2*np.pi/self.f0 / 3600 
         self.u_truth_total=u_truth*1
         self.v_truth_total=v_truth*1
         self.uw_truth=uw_truth*1
         self.vw_truth=vw_truth*1
         
-        
+        #display(u_truth)
         
         print("seperate hourly truth into low and high frequencies")
         uobs_low0,uobs= filter_seperation(u_truth,cutoff=cutoff_truth)
         vobs_low0,vobs= filter_seperation(v_truth,cutoff=cutoff_truth)
+        
+       # display(uobs_low0)
+       # display(uobs)
+        
         self.u_truth_low=uobs_low0*1
         self.v_truth_low=vobs_low0*1
         self.u_truth_high=uobs*1
         self.v_truth_high=vobs*1
+        
+        #display(self.u_truth_high)
+        
         if remove_super_high:
             uobs_low0,uobs= filter_seperation(u_truth,cutoff=24/self.inertial_period * 2)
             vobs_low0,vobs= filter_seperation(v_truth,cutoff=24/self.inertial_period * 2)
@@ -65,20 +85,26 @@ class synthetic_wacm:
             self.v_truth_super_high=vobs*1
             
         print("Remove tides from high-frequency truth")
-        u,v, ut, vt=remove_tides([self.u_truth_high,self.v_truth_high],lat0)
+        u,v, ut, vt=remove_tides([self.u_truth_high.copy(),self.v_truth_high.copy()],lat0)
+       
+       # display(self.u_truth_high)
+
         self.u_truth_high_notide=u*1
         self.v_truth_high_notide=v*1
         self.u_truth_high_tide=ut*1
         self.v_truth_high_tide=vt*1
         print("bandpass to get true NIO")
-        self.u_truth_high_notide_nio=NIO_bandpass(self.u_truth_high,lat0)
-        self.v_truth_high_notide_nio=NIO_bandpass(self.v_truth_high,lat0)
+        self.u_truth_high_notide_nio=NIO_bandpass(self.u_truth_high.copy(),lat0)
+        self.v_truth_high_notide_nio=NIO_bandpass(self.v_truth_high.copy(),lat0)
         
         print("generate synthetic wacm")
         wacm_u,wacm_v,wacm_uw,wacm_vw=interp_wacm([u_truth,v_truth, uw_truth,vw_truth],
-                                                  lat0,
-                                                   t_range=[u_truth.time[0].values,u_truth.time[-1].values],
-                                                   orbit=orbit)
+                                                  lat0,lon0,
+                                                  t_range=[u_truth.time[0].values,u_truth.time[-1].values],
+                                                  orbit=orbit)
+        
+        #display(self.u_truth_high)
+
         self.u_wacm_total=wacm_u*1
         self.v_wacm_total=wacm_v*1
         self.uw_wacm=wacm_uw*1
@@ -90,12 +116,20 @@ class synthetic_wacm:
         self.v_wacm_low=v_low0*1
         self.u_wacm_high=u*1
         self.v_wacm_high=v*1
-        u,v, ut, vt=remove_tides([u,v],lat0)
+        
+        #display(self.u_truth_high)
+
+       # display(u)
+        
+        u,v, ut, vt=remove_tides([u.copy(),v.copy()],lat0)
+       # display(u)
         self.u_wacm_high_notide=u*1
         self.v_wacm_high_notide=v*1
         self.u_wacm_high_tide=ut*1
         self.v_wacm_high_tide=vt*1
         
+        #display(self.u_truth_high)
+
         return
     
     def get_wacm_nio(self,t_out,
@@ -119,16 +153,17 @@ class synthetic_wacm:
         t0=t_out.min()-np.timedelta64(int(np.ceil(self.wacm_sampling_period) ),'h')
         t1=t_out.max()+np.timedelta64(int(np.ceil(self.wacm_sampling_period) ),'h')
         
-        u=self.u_wacm_high_notide.sel(time=slice(t0,t1))
-        
+        u=self.u_wacm_high.sel(time=slice(t0,t1))
         t0,t1=u.time.values[0],u.time.values[-1]
-        u=self.u_wacm_high_notide.sel(time=slice(t0,t1))
-        v=self.v_wacm_high_notide.sel(time=slice(t0,t1))
+        
+        u=self.u_wacm_high.sel(time=slice(t0,t1))
+        v=self.v_wacm_high.sel(time=slice(t0,t1))
+        
         u+=np.random.normal(0,uv_noise,u.size)
         v+=np.random.normal(0,uv_noise,u.size)
 
         if fitting_method=='Harmonics':
-            up,vp,param=optimize_harmonics(u,v,utils.lat2f(self.lat0),t_out=t_out,periods=periods,include_nio=include_nio)
+            up,vp,param=optimize_harmonics(u,v,lat2f(self.lat0),t_out=t_out,periods=periods,include_nio=include_nio)
             return up,vp,None,None,param
         else:
             if 'time' in str(type(t0)):
@@ -145,21 +180,25 @@ class synthetic_wacm:
 
             uw+=np.random.normal(0,wind_noise,uw.size)
             vw+=np.random.normal(0,wind_noise,uw.size)
-
             
-            utid,vtid,param=optimize_harmonics(u,v,self.f0,
-                      periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
-                      include_nio=False)
             if has_tides:
+                utid,vtid,param=optimize_harmonics(u.copy(),v.copy(),self.f0,
+                                              periods=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
+                                              include_nio=False)
                 u=u-utid.interp(time=u.time.values)
                 v=v-vtid.interp(time=u.time.values)
+            else:
+                utid=0
+                vtid=0
+                
             up,vp,_,_,param=reconstruct_NIO_short_segment(u,v,
                                                           uw,vw,self.lat0,
                                                           t_out=t_out,
                                                           uv_noise=uv_noise,
                                                           wind_noise=wind_noise,
-                                                          has_tides=has_tides,
-                                                          c_clim=c_clim,c_min=c_min,c_max=c_max)
+                                                          has_tides=False,
+                                                          is_windstress=is_windstress,
+                                                         c_clim=c_clim,c_min=c_min,c_max=c_max)
        
             if len(t_out_short)>0:
                 up=up.interp(time=t_out_short)
@@ -168,9 +207,12 @@ class synthetic_wacm:
                 vtid=vtid.interp(time=t_out_short)
                 
             return up,vp,utid,vtid,param
+        
+import utide
+import numpy as np    
     
+def remove_tides(d,lat0,constit=('O1', 'K1', 'M2', 'S2', 'M4', 'M6')):
     
-def remove_tides(d,lat0):
     """
     Parameter:
     ---------
@@ -182,26 +224,31 @@ def remove_tides(d,lat0):
        detided time series on the original time axis
     
     """
-    import utide
-    import numpy as np
 
     u=d[0]
     v=d[1]
     
-    tt=(u.time.values-u.time.values[0])/np.timedelta64(1,'s')/86400 #convert to days
-    constit=('O1', 'K1', 'M2', 'S2', 'M4', 'M6')
+    # why was Jinbo using this? It seems to break the tide reconstruction. 
+    # Used to have tt where u.time.values is now in .solve and .reconstruct
+    #tt=(u.time.values-u.time.values[0])/np.timedelta64(1,'s')/86400 #convert to days
+    
     if len(constit)>0:
-        cc=utide.solve(tt,u.values,v.values,
+        cc=utide.solve(u.time.values.copy(),u.values.copy(),v.values.copy(),
                        constit=constit, 
                        lat=lat0,verbose=False)
     else:
-        cc=utide.solve(tt,u.values,v.values, 
+        cc=utide.solve(u.time.values.copy(),u.values.copy(),v.values.copy(), 
                        lat=lat0,verbose=False)
 
-    tide=utide.reconstruct(tt,cc,verbose=False)
+    tide=utide.reconstruct(u.time.values.copy(),cc,verbose=False)
+    
+    #display(u.values)
+    #display(tide.u)
+    
     u.values=u.values-tide.u
     v.values=v.values-tide.v
-    
+    #display(u.values)
+
     ut=d[0]*0
     vt=d[1]*0
     ut.values[:]=tide.u*1
@@ -210,17 +257,18 @@ def remove_tides(d,lat0):
     
     return u, v, ut,vt
 
-def NIO_bandpass(uobs,f0):
+import xarray as xr
+
+def NIO_bandpass(uobs,f0,band=[0.96,1.04]):
     """
     subtract NIO from high-frequency velocities
     
     uobs: xarry with time axis
     
     """
-    import xarray as xr
     
     if abs(f0)>0.1: #latitude
-        f0=np.abs(utils.lat2f(f0))
+        f0=np.abs(lat2f(f0))
     
     tt=uobs.time.values
     dtt=np.diff(tt)
@@ -232,7 +280,7 @@ def NIO_bandpass(uobs,f0):
         period=dtt[100]/np.timedelta64(1,'s')
         newd=uobs
         
-    d_filtered=mysignal.filter_butter(newd.values,[0.95*f0,1.05*f0],2*np.pi/period,'bandpass')
+    d_filtered=filter_butter(newd.values,[band[0]*f0,band[1]*f0],2*np.pi/period,'bandpass')
     
     if (dtt.min()-dtt.max())!=0: #need interpolation on to uniform grid
         dd=xr.DataArray(d_filtered,dims=('time'),coords={'time':tt_new} )
@@ -241,16 +289,16 @@ def NIO_bandpass(uobs,f0):
         dout=xr.DataArray(d_filtered,dims=('time'),coords={'time':tt} )
     return dout
 
+import pandas as pd
     
-def generate_wacm(uobs,vobs,uwobs,vwobs,lat0,wacm_error_v=0,wacm_error_wind=[0,0],orbit='700_1800'):
+def generate_wacm(uobs,vobs,uwobs,vwobs,lat0,lon0=140,wacm_error_v=0,wacm_error_wind=[0,0],orbit='700_1800'):
     """
     wacm_error_v: velocity errors in m/s, std
     wacm_error_wind: wind erros, [speed percetage, wind direction in degrees]
     
     orbit: string, '500_1000', '700_1800' or 'hourly'
     """
-    
-    import pandas as pd
+    import odysea_class as ody
     
     
     tt=uobs.time.values
@@ -262,8 +310,8 @@ def generate_wacm(uobs,vobs,uwobs,vwobs,lat0,wacm_error_v=0,wacm_error_wind=[0,0
         wacm_sampling=load_wacm_period(lat0,orbit)*3600 #convert to seconds
 
     #print('The averaged wacm sampling period at lat=%4.1f is %5.2f hours.'%(lat0,wacm_sampling/3600))
-
-    tt_wacm=pd.date_range(tt.min(),tt.max(),freq='%is'%wacm_sampling)
+    tt_wacm=ody.wacmLatLon().getSamplingTimes([lat0],[lon0],tt.min(),tt.max())
+    #tt_wacm=pd.date_range(tt.min(),tt.max(),freq='%is'%wacm_sampling)
 
     #interpolate hourly observations to wacm time to generate synthetic wacm surface velocity
     wacm_u=uobs.interp(time=tt_wacm)+np.random.normal(0,wacm_error_v,tt_wacm.size)
@@ -290,7 +338,7 @@ def generate_wacm(uobs,vobs,uwobs,vwobs,lat0,wacm_error_v=0,wacm_error_wind=[0,0
     return wacm_u, wacm_v, wacm_uw, wacm_vw
     
 
-def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_wind=0,has_tides=False):
+def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_wind=0,has_tides=False,is_windstress=False):
     """
     predict NIO using slab model prediction
     calculate the fitting error
@@ -340,12 +388,12 @@ def fitting_error(uobs,vobs,uwobs,vwobs,t0,t1,lat0,wacm_error_v=0,wacm_error_win
     u_sub=uobs.sel(time=slice(t_uv.min(),t_uv.max()))
     t_output=v_sub.time.values
 
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     #print('The inertial period = %5.2f hours'%(2*np.pi/f0/86400*24))
 
     u_pred,v_pred=optimize_slab_noshear_withtide(t_uv,u.data+noise_u,v.data+noise_v,
                                                  t_tau,uw.data+noise_uw,vw.data+noise_vw,
-                                                 f0,t_output,has_tides=has_tides)
+                                                 f0,t_output,has_tides=has_tides,is_windstress=is_windstress)
 
     error=(((u_pred-u_sub.values)**2+(v_pred-v_sub.values)**2).mean()/2)**0.5
     #print('The prediction error for the current speed is %6.3f cm'%(error))
@@ -397,7 +445,7 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
     import pandas as pd
     import xarray as xr
     
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
     if len(t_out)==0:
         t_out=pd.date_range(wacm_u.time.values[0],wacm_u.time.values[-1],freq='1h')
@@ -410,9 +458,8 @@ def reconstruct_NIO_short_segment(uobs,vobs,uwobs,vwobs,lat0,
         
     u_pred,v_pred,param=optimize_slab_noshear_withtide(wacm_u.time.values,wacm_u.data,wacm_v.data,
                                          wacm_uw.time.values,wacm_uw.data,wacm_vw.data,
-                                         f0,has_tides=False,
-                                         c_clim=c_clim,c_min=c_min,c_max=c_max)
-
+                                         f0,has_tides=has_tides,is_windstress=is_windstress,
+                                                      c_clim=c_clim,c_min=c_min,c_max=c_max)
     
     u_pred=u_pred.interp(time=t_out) 
     v_pred=v_pred.interp(time=t_out)
@@ -481,7 +528,7 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
     import pandas as pd
     import xarray as xr
     
-    f0=utils.lat2f(lat0)
+    f0=lat2f(lat0)
     if input_wacm_data:
         wacm_u,wacm_v,wacm_uw,wacm_vw=uobs,vobs,uwobs,vwobs
     else:
@@ -528,6 +575,8 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
                                                  f0,t_output,has_tides=has_tides,is_windstress=is_windstress,
                                                            c_clim=c_clim,c_min=c_min,c_max=c_max)
 
+            
+            
             u_pred=xr.DataArray(u_pred,dims=('time'),coords={'time':t_output})
             v_pred=xr.DataArray(v_pred,dims=('time'),coords={'time':t_output})
             
@@ -546,33 +595,47 @@ def reconstruct_NIO(uobs,vobs,uwobs,vwobs,lat0,
             
     return u_pred, v_pred
 
-def interp_wacm(data,lat0,t_range=[],orbit='700_1800'):
+
+import odysea_class
+
+def interp_wacm(data,lat0,lon0,t_range=[],orbit='700_1800'):
                     
     """
     interpolate data onto wacm sampling
     
     data: xarray with 'time' axis
+    
+    lat0;lon0 provide the coordinates of the station
+    
+    orbit: default '700_1800'
+    
     """
 
     import pandas as pd
     
-    if orbit=='hourly':
-        return data
-    elif orbit[-1]=='h':
-        wacm_sampling=int(orbit[:-1])*3600
-    else:
-        wacm_sampling=load_wacm_period(lat0,orbit)*3600 #convert to seconds
+#    if orbit=='hourly': #provide option to return hourly data
+#        return data
+#    else orbit[-1]=='h': #this option specify a uniform sampling interval with a unit of hour
+#        wacm_sampling=int(orbit[:-1])*3600
+        
     #print('The averaged wacm sampling period at lat=%4.1f is %5.2f hours.'%(lat0,wacm_sampling/3600))
     if type(data) != type([]):
         if len(t_range)==0:
-            tt=data.time.values
-            tt_wacm=pd.date_range(tt.min(),tt.max(),freq='%is'%wacm_sampling)
+           # tt=data.time.values
+           # tt_wacm=pd.date_range(tt.min(),tt.max(),freq='%is'%wacm_sampling)
+            tt_wacm = odysea_class.wacmLatLon().getSamplingTimes([lat0],[lon0],data.time.values[0],data.time.values[-1])[0]
+
         else:
-            tt_wacm=pd.date_range(t_range[0],t_range[1],freq='%is'%wacm_sampling)
+            #tt_wacm=pd.date_range(t_range[0],t_range[1],freq='%is'%wacm_sampling)
+            tt_wacm = odysea_class.wacmLatLon().getSamplingTimes([lat0],[lon0],t_range[0],t_range[1])[0]
+
+            
         return data.interp(time=tt_wacm,method='linear')
+    
     else:
         dout=[]
-        tt_wacm=pd.date_range(t_range[0],t_range[1],freq='%is'%wacm_sampling)
+        #tt_wacm=pd.date_range(t_range[0],t_range[1],freq='%is'%wacm_sampling)
+        tt_wacm = odysea_class.wacmLatLon().getSamplingTimes([lat0],[lon0],t_range[0],t_range[1])[0]
         for dd in data:
             dout.append(dd.interp(time=tt_wacm,method='linear'))
         return dout
@@ -581,23 +644,29 @@ def interp_wacm(data,lat0,t_range=[],orbit='700_1800'):
 
 
 def load_wacm_period(lat,orbit='700_1800'):
+    """
+    This is obsolete as the orbit is fixed now. 
+    """
+    
     if orbit=='hourly':
         return 1
     if orbit[-1]=='h':
         return int(orbit[:-1])
     
-    fn='wacm_sampling_period_orbit_%s.txt'%orbit
+    fn='../src/wacm_sampling_period_orbit_%s.txt'%orbit
     d=np.loadtxt(fn)
     
     period=interp1d(d[:,0],d[:,1])(np.array(lat))
     return period
 
+
+import pandas as pd
+
 def filter_seperation(uv,cutoff=1/10):
     """
     uv: xarray with time axis
-    
+    cutoff: the filter's cutoff frequency (1/day)
     """
-    import pandas as pd
     
     dtt=np.diff(uv.time.values)
     
@@ -609,8 +678,8 @@ def filter_seperation(uv,cutoff=1/10):
         uv_low=uv*1
         dtt=dtt[0]/np.timedelta64(1,'s')/3600 # hours
         
-    #low-pass filter at curoff period of 10 days
-    uv_low.data=mysignal.filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
+    #low-pass filter at cutoff period of 10 days
+    uv_low.data=filter_butter(uv_low.data,cutoff=cutoff,fs=24/dtt,btype='low')
     
     uv_low=uv_low.interp(time=uv.time)
     uv_high=uv-uv_low
@@ -764,6 +833,7 @@ def predict_slab_noshear(x,tt,taux,tauy,f):
     #u_bias=0
     #v_bias=0
     #t_eval=np.arange(tt.min(),tt.max()+1/24,1/24) #integrate using dt=1 hr
+
     
     sol = solve_ivp(slab_noshear, [tt.min(), tt.max()], [u0,v0], t_eval=tt, args=(f,H,c,taux,tauy)) #(1e-4, 10.0, 1e-5, taux,tauy,0.,0.,0.,0.) )
     
@@ -821,7 +891,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
                                    has_tides=False,
                                    t_out=[],
                                    T_tide=[1.07581, 0.99727, 0.517525, 0.5, 0.2587625, 0.2587625],
-                                   is_windstress=False,c_clim=60,c_max=2000,c_min=0):
+                                   is_windstress=False,c_clim=40,c_max=700,c_min=10,use_weight=False):
     
     """
     t_uv: time axis for input u and v, np.datetime64 or pandas.date_range
@@ -856,6 +926,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
     if msk.sum()>0 and has_tides:
         T_tide=T_tide[msk]
         print("include tides with periods of ",T_tide)
+        
     if has_tides:
         #T_tide=T_tide[1:4]
         x0=[u[0],v[0],c_clim,2e-6,0,0,]+[0,0,0,0]*len(T_tide)
@@ -867,21 +938,26 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
         
     else:
         x0=[u[0],v[0],c_clim,2e-6,0,0]
-        bounds = [[-3,-3,c_min,2e-7,-3,-3],
-                  [3,3,c_max,2e-5,3,3]]
+        bounds = [[-3,-3,c_min,1e-6,-3,-3],
+                  [3,3,c_max,1e-4,3,3]]
         
-    # bounds are:
-    # -3 to 3 m/s currents (pretty wide)
-    # 5 to 2000m mixed layer; fairly reasonable, not including 0 incase of numerical problems
-    # 2e-7 to 2e-5; 1 order of magnitude around orginal c value; no basis
-    # -3 to 3 m/s current bias (very wide)    
-    
+        # bounds are:
+        # -3 to 3 m/s currents (pretty wide)
+        # 5 to 2000m mixed layer; fairly reasonable, not including 0 incase of numerical problems (Jinbo changed min,max to 10,700m)
+        # 2e-7 to 2e-5; 1 order of magnitude around orginal c value; no basis (Jinbo changed to 1e-8,1e-4)
+        # -3 to 3 m/s current bias (very wide)
+        
+   # print(bounds)
+   # print(np.shape(bounds))
     uv_truth=np.r_[u,v].flatten()
     
     #win=np.hanning(u.size)
     #weight=np.r_[win,win].flatten()
     x=np.linspace(-np.pi/2+np.pi/40,np.pi/2-np.pi/40,u.size)
-    weight=np.r_[np.cos(x),np.cos(x)].flatten()
+    weight=1
+    if use_weight:
+        weight=np.r_[np.cos(x),np.cos(x)].flatten()
+    
     
     if not is_windstress:
         #convert wind speed to windstress
@@ -926,11 +1002,14 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
     v_pred=xr.DataArray(v_pred,dims=('time'),coords={'time':t_out0})
     
     if len(t_out)>0:
-        u_pred.interp(time=t_out)
-        v_pred.interp(time=t_out)
+        u_pred=u_pred.interp(time=t_out)
+        v_pred=v_pred.interp(time=t_out)
     #print('cost=',(((u.data-u_pred)**2/2+(v.data-v_pred)**2)/2).mean()**0.5)
 
-    return u_pred,v_pred, {'H':res_lsq.x[2],'c':res_lsq.x[3],'cost':res_lsq.cost,'success':res_lsq.success}
+    dout=xr.Dataset({'nio_u_predicted':u_pred,'nio_v_predicted':v_pred,
+                     'H':res_lsq.x[2],'c':res_lsq.x[3],'cost':res_lsq.cost,'success':res_lsq.success})
+    
+    return dout
     
 
 def harmonics(x,tt,periods):
@@ -1063,12 +1142,37 @@ def create_wacm_from_mooring(ss,cutoff_truth=1/4,
     for key in ['UU_%s'%vt,'VV_%s'%vt,'Uwind_o','Vwind_o']:
         din.append(dd[key])
     
-    d700=synthetic_wacm(din,dd.lat0,
+    d700=synthetic_wacm(din,dd.lat0,dd.lon0,
                         cutoff_truth=cutoff_truth,
                         cutoff_wacm=cutoff_wacm,
                         remove_super_high=remove_super_high,
                         orbit=orbit)
     del dd
+    
+    return d700
+
+import xarray as xr
+
+def create_wacm_from_model(model_ds,cutoff_truth=1/4,
+                             cutoff_wacm=1/4,
+                             orbit='700_1800',
+                             remove_super_high=False,
+                             lat_i=0,lon_i=0,times=None):
+
+    
+    # din = u_truth,v_truth,uw_truth,vw_truth
+
+
+    din = model_ds.getModelLatLon(lat_i,lon_i) #[model_ds.U,model_ds.V,model_ds.TX,model_ds.TY]
+    
+    
+    #model_ds.colocateModelPoints(lat_is,lon_is,times) # returns u,v,tx,ty
+    
+    d700=synthetic_wacm(din,lat_i,lon_i,
+                        cutoff_truth=cutoff_truth,
+                        cutoff_wacm=cutoff_wacm,
+                        remove_super_high=remove_super_high,
+                        orbit=orbit)
     
     return d700
 
