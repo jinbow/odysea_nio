@@ -752,6 +752,7 @@ def slab(t, y, f,H,c,taux,tauy,U_x,U_y,V_x,V_y):
     tau_x=taux(t)
     tau_y=tauy(t)
     
+    #tau_x = interp1d(tt,taux.data,fill_value="extrapolate")(t)
     
     yy=np.zeros_like(y)
     
@@ -878,8 +879,6 @@ def loss_slab_noshear(x,y,tt,taux,tauy,f,weight,T=[],has_tides=False):
 
         u-=u_tide
         v-=v_tide
-    
-    
 
     loss=(np.r_[u, v].flatten() - y) * weight
     
@@ -937,8 +936,8 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
                   [3,3,c_max,2e-5,3,3] + [np.inf]*4*len(T_tide)]
         
     else:
-        x0=[u[0],v[0],c_clim,2e-6,0,0]
-        bounds = [[-3,-3,c_min,1e-6,-3,-3],
+        x0=[u[0],v[0],c_clim,2e-5,0,0]
+        bounds = [[-3,-3,c_min,1e-8,-3,-3],
                   [3,3,c_max,1e-4,3,3]]
         
         # bounds are:
@@ -980,6 +979,7 @@ def optimize_slab_noshear_withtide(t_uv,u,v,t_tau,taux,tauy,f0,
     tauy_func=interp1d(t_tau_days,tauy,fill_value="extrapolate")
     
     res_lsq = least_squares(loss_slab_noshear, x0, bounds=bounds,loss='cauchy',
+    #res_lsq = least_squares(loss_slab_noshear, x0,loss='cauchy',
                         args=(uv_truth, t_uv_days, taux_func, tauy_func, f0, weight, T_tide,has_tides))
     
         

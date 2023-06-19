@@ -25,17 +25,17 @@ xrod=xr.open_dataset
 class COAS:
     
 
-    def __init__(self,days=20):
+    def __init__(self,days=[20,60]):
         # note this is only appropriate for the coupled model as written on JPL Bura server.
         u_folder = '/u/bura-m0/hectorg/COAS/llc2160/coarse/Coarse/U/'
         v_folder =     '/u/bura-m0/hectorg/COAS/llc2160/coarse/Coarse/V/'
         tau_y_folder = '/u/bura-m0/hectorg/COAS/llc2160/coarse/Coarse/oceTAUY/'
         tau_x_folder = '/u/bura-m0/hectorg/COAS/llc2160/coarse/Coarse/oceTAUX/'
 
-        u_files = np.sort(glob.glob(u_folder + '/*.nc'))[1:20*24]
-        v_files = np.sort(glob.glob(v_folder + '/*.nc'))[1:20*24]
-        tau_x_files = np.sort(glob.glob(tau_x_folder + '/*.nc'))[1:20*24]
-        tau_y_files = np.sort(glob.glob(tau_y_folder + '/*.nc'))[1:20*24]
+        u_files = np.sort(glob.glob(u_folder + '/*.nc'))[days[0]*24:days[1]*24]
+        v_files = np.sort(glob.glob(v_folder + '/*.nc'))[days[0]*24:days[1]*24]
+        tau_x_files = np.sort(glob.glob(tau_x_folder + '/*.nc'))[days[0]*24:days[1]*24]
+        tau_y_files = np.sort(glob.glob(tau_y_folder + '/*.nc'))[days[0]*24:days[1]*24]
 
         self.U = xr.open_mfdataset(u_files,parallel=True,preprocess=addTimeDimCoarse)
         self.V = xr.open_mfdataset(v_files,parallel=True,preprocess=addTimeDimCoarse)
